@@ -1,801 +1,717 @@
 from tkinter import *
-from tkinter import ttk, messagebox, font
+from tkinter import ttk, messagebox
 import mysql.connector
-from datetime import datetime
-import threading
-import time
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import numpy as np
+import matplotlib.dates as mdates
+from datetime import datetime, timedelta
 
-# ============================================
-# GLOBAL VARIABLES
-# ============================================
-tree = None
-selected_table = None
-status_bar = None
-loading_overlay = None
-dashboard_window = None
-current_user = None
-login_time = None
+# Color scheme and styling constants
+COLORS = {
+    'bg_primary': '#1a1a2e',
+    'bg_secondary': '#16213e',
+    'bg_card': '#0f3460',
+    'bg_input': '#e8e8e8',
+    'accent': '#e94560',
+    'accent_hover': '#c73b54',
+    'text_light': '#ffffff',
+    'text_dark': '#2d3436',
+    'text_muted': '#b0b0b0',
+    'success': '#00b894',
+    'danger': '#e17055',
+    'warning': '#fdcb6e'
+}
 
+def setup_styles():
+    """Configure ttk styles for modern look"""
+    style = ttk.Style()
+    style.theme_use('clam')
+    
+    # Configure Combobox
+    style.configure('Custom.TCombobox',
+                    fieldbackground=COLORS['bg_input'],
+                    background=COLORS['bg_input'],
+                    foreground=COLORS['text_dark'],
+                    borderwidth=0,
+                    focuscolor='none',
+                    padding=8)
+    
+    style.map('Custom.TCombobox',
+              fieldbackground=[('readonly', COLORS['bg_input'])],
+              background=[('readonly', COLORS['bg_input'])])
+    
+    # Configure Treeview
+    style.configure('Custom.Treeview',
+                    background=COLORS['bg_input'],
+                    foreground=COLORS['text_dark'],
+                    fieldbackground=COLORS['bg_input'],
+                    borderwidth=0,
+                    rowheight=30)
+    
+    style.map('Custom.Treeview',
+              background=[('selected', COLORS['accent'])],
+              foreground=[('selected', COLORS['text_light'])])
+    
+    style.configure('Custom.Treeview.Heading',
+                    background=COLORS['bg_secondary'],
+                    foreground=COLORS['text_light'],
+                    borderwidth=0,
+                    padding=10,
+                    font=('Segoe UI', 10, 'bold'))
+    
+    style.map('Custom.Treeview.Heading',
+              background=[('active', COLORS['bg_card'])],
+              foreground=[('active', COLORS['text_light'])])
+    
+    return style
 
-# ============================================
-# DATABASE CONNECTION
-# ============================================
+def create_rounded_button(parent, text, command, **kwargs):
+    """Create a modern rounded button"""
+    btn = Button(
+        parent,
+        text=text,
+        command=command,
+        font=('Segoe UI', 10, 'bold'),
+        relief='flat',
+        borderwidth=0,
+        cursor='hand2',
+        **kwargs
+    )
+    return btn
+
 def get_connection():
-    try:
-        return mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="Password.1",
-            database="CoffeeShopDB",
-            connection_timeout=10
-        )
-    except mysql.connector.Error as e:
-        messagebox.showerror("Database Error", f"Failed to connect to database:\n{str(e)}")
-        return None
+    return mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="Password.1",
+        database="CoffeeShopDB"
+    )
 
-
-# ============================================
-# LOADING ANIMATION
-# ============================================
-class LoadingOverlay:
-    def __init__(self, parent):
-        self.parent = parent
-        self.frame = Frame(parent, bg='white', bd=2, relief=SOLID)
-        self.frame.place(relx=0.5, rely=0.5, anchor=CENTER, width=200, height=100)
-
-        self.label = Label(
-            self.frame,
-            text="⏳ Loading...",
-            font=("Segoe UI", 14, "bold"),
-            bg='white',
-            fg='#667eea'
-        )
-        self.label.pack(expand=True)
-
-        # Animated dots
-        self.dots = 0
-        self.animate()
-
-    def animate(self):
-        if self.frame.winfo_exists():
-            self.dots = (self.dots + 1) % 4
-            dots_text = "." * self.dots
-            self.label.config(text=f"⏳ Loading{dots_text}")
-            self.parent.after(500, self.animate)
-
-    def destroy(self):
-        self.frame.destroy()
-
-
-# ============================================
-# TOAST NOTIFICATION (Custom Tkinter Toast)
-# ============================================
-class Toast:
-    def __init__(self, parent, message, type="info"):
-        self.parent = parent
-
-        # Colors based on type
-        colors = {
-            "success": {"bg": "#48bb78", "fg": "white"},
-            "error": {"bg": "#fc8181", "fg": "white"},
-            "info": {"bg": "#667eea", "fg": "white"},
-            "warning": {"bg": "#ed8936", "fg": "white"}
-        }
-
-        color_set = colors.get(type, colors["info"])
-
-        self.frame = Frame(parent, bg=color_set["bg"], bd=0, relief=FLAT)
-        self.frame.place(relx=0.5, rely=0.95, anchor=CENTER)
-
-        # Add shadow effect
-        shadow = Frame(parent, bg='gray', bd=0)
-        shadow.place(relx=0.5, rely=0.955, anchor=CENTER,
-                     width=len(message) * 8 + 40, height=45)
-        shadow.lower()
-
-        Label(
-            self.frame,
-            text=message,
-            font=("Segoe UI", 11, "bold"),
-            bg=color_set["bg"],
-            fg=color_set["fg"],
-            padx=20,
-            pady=10
-        ).pack()
-
-        # Auto-dismiss after 3 seconds
-        parent.after(3000, self.dismiss)
-
-    def dismiss(self):
-        if self.frame.winfo_exists():
-            self.frame.destroy()
-
-
-# ============================================
-# ENHANCED TABLE DISPLAY WITH STYLING
-# ============================================
 def display_table(table_name):
-    global tree, status_bar
-
-    if table_name == "Select a Table" or not table_name:
+    if table_name == "Select a Table":
         return
-
-    if tree is None:
-        return
-
-    # Show loading animation
-    loading = LoadingOverlay(dashboard_window)
-    dashboard_window.update()
-
-    # Simulate async loading
-    def load_data():
-        try:
-            conn = get_connection()
-            if not conn:
-                loading.destroy()
-                return
-
-            cursor = conn.cursor()
-
-            # Get table data
-            cursor.execute(f"SELECT * FROM {table_name}")
-            rows = cursor.fetchall()
-            columns = [column[0] for column in cursor.description]
-
-            # Update treeview in main thread
-            dashboard_window.after(0, lambda: update_treeview(columns, rows, table_name))
-
-            cursor.close()
-            conn.close()
-
-            # Update status bar
-            dashboard_window.after(0, lambda: update_status(f"Loaded {len(rows)} records from {table_name}", "success"))
-
-        except mysql.connector.Error as e:
-            dashboard_window.after(0, lambda: Toast(dashboard_window, f"Error: {str(e)}", "error"))
-        finally:
-            dashboard_window.after(0, loading.destroy)
-
-    # Run in thread to prevent UI freezing
-    threading.Thread(target=load_data, daemon=True).start()
-
-
-def update_treeview(columns, rows, table_name):
-    global tree
 
     tree.delete(*tree.get_children())
 
-    # Configure columns
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(f"SELECT * FROM {table_name}")
+    rows = cursor.fetchall()
+    columns = [column[0] for column in cursor.description]
+
     tree["columns"] = columns
     tree["show"] = "headings"
 
-    # Enhanced column styling
     for col in columns:
-        tree.heading(col, text=col, anchor=CENTER)
-        # Adjust column width based on content
-        max_width = max(
-            len(str(col)) * 10,
-            max([len(str(row[idx])) for idx, row in enumerate(rows) if row], default=0) * 8
-        )
-        tree.column(col, width=min(max(120, max_width), 300), anchor=CENTER, minwidth=80)
+        tree.heading(col, text=col)
+        tree.column(col, width=120, anchor='center')
 
-    # Insert data with alternating colors
-    for idx, row in enumerate(rows):
-        tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
-        tree.insert("", END, values=row, tags=(tag,))
+    for row in rows:
+        tree.insert("", END, values=row)
 
-    # Configure row colors
-    tree.tag_configure('evenrow', background='#f7fafc')
-    tree.tag_configure('oddrow', background='white')
+    cursor.close()
+    conn.close()
 
-
-def update_status(message, type="info"):
-    global status_bar
-    if status_bar:
-        colors = {
-            "success": "#48bb78",
-            "error": "#fc8181",
-            "info": "#667eea",
-            "warning": "#ed8936"
-        }
-        status_bar.config(text=f"  {message}", bg=colors.get(type, "#667eea"), fg="white")
-        # Reset after 5 seconds
-        dashboard_window.after(5000, lambda: status_bar.config(text="  Ready", bg="#667eea"))
-
-
-# ============================================
-# DASHBOARD WITH ENHANCED UI
-# ============================================
-def open_dashboard():
-    global tree, selected_table, status_bar, dashboard_window, login_time
-
-    dashboard_window = Toplevel()
-    dashboard_window.title("☕ Coffee Shop Database Management System")
-    dashboard_window.geometry("1400x750")
-    dashboard_window.configure(bg='#f0f4f8')
-    dashboard_window.resizable(True, True)
-
-    # Set icon (if available)
+def show_sales_chart():
+    """Display a bar chart showing sales hike"""
     try:
-        dashboard_window.iconbitmap('coffee.ico')
-    except:
-        pass
-
-    # Store login time
-    login_time = datetime.now()
-
-    # ===== HEADER WITH GRADIENT =====
-    header_frame = Frame(
-        dashboard_window,
-        bg='#667eea',
-        height=80,
-        relief=FLAT
-    )
-    header_frame.pack(fill=X, side=TOP)
-    header_frame.pack_propagate(False)
-
-    # Gradient effect using multiple frames
-    for i in range(10):
-        gradient_frame = Frame(
-            header_frame,
-            bg=f'#{int(102 - i * 3):02x}{int(126 - i * 3):02x}{int(234 - i * 3):02x}',
-            height=8
+        # Check if matplotlib and numpy are available
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            import numpy as np
+        except ImportError as e:
+            messagebox.showerror("Missing Library", 
+                f"Required library not installed: {str(e)}\n\n"
+                "Please install required libraries:\n"
+                "pip install matplotlib numpy")
+            return
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Query to get sales data grouped by date
+        query = """
+            SELECT DATE(Sale_date) as sale_date, 
+                   SUM(Total_Amount) as total_sales
+            FROM Sales
+            GROUP BY DATE(Sale_date)
+            ORDER BY sale_date DESC
+            LIMIT 30
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        if not results:
+            messagebox.showwarning("No Data", "No sales data available to display chart.")
+            return
+        
+        # Prepare data
+        dates = [row[0] for row in results]
+        sales = [float(row[1]) for row in results]
+        
+        # Reverse to show chronological order
+        dates.reverse()
+        sales.reverse()
+        
+        # Create new window for chart
+        chart_window = Toplevel()
+        chart_window.title("Sales Hike Analysis")
+        chart_window.geometry("1000x700")
+        chart_window.configure(bg=COLORS['bg_secondary'])
+        
+        # Create frame for chart
+        chart_frame = Frame(chart_window, bg=COLORS['bg_secondary'])
+        chart_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
+        
+        # Create figure with dark theme
+        plt.style.use('dark_background')
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), 
+                                       gridspec_kw={'height_ratios': [3, 1]})
+        fig.patch.set_facecolor('#16213e')
+        
+        # Plot 1: Bar chart with gradient colors
+        bars = ax1.bar(range(len(dates)), sales, 
+                      color=plt.cm.Reds(np.linspace(0.4, 0.9, len(sales))),
+                      edgecolor='white',
+                      linewidth=0.5)
+        
+        # Add value labels on bars
+        for i, (bar, val) in enumerate(zip(bars, sales)):
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2., height,
+                    f'${val:,.0f}',
+                    ha='center', va='bottom',
+                    color='white',
+                    fontsize=8,
+                    fontweight='bold')
+        
+        # Format x-axis with dates
+        ax1.set_xticks(range(len(dates)))
+        ax1.set_xticklabels([d.strftime('%m/%d') for d in dates], 
+                           rotation=45, ha='right')
+        
+        # Add trend line
+        if len(dates) > 1:
+            z = np.polyfit(range(len(dates)), sales, 1)
+            p = np.poly1d(z)
+            ax1.plot(range(len(dates)), p(range(len(dates))), 
+                    "w--", alpha=0.7, linewidth=2, label='Trend')
+        
+        # Style the chart
+        ax1.set_xlabel('Date', color='white', fontsize=12, fontweight='bold')
+        ax1.set_ylabel('Total Sales ($)', color='white', fontsize=12, fontweight='bold')
+        ax1.set_title('📈 Sales Hike Analysis - Last 30 Days', 
+                     color='white', fontsize=14, fontweight='bold', pad=20)
+        ax1.grid(True, alpha=0.2, color='white')
+        ax1.legend(loc='upper left', facecolor='#16213e', edgecolor='white')
+        
+        # Plot 2: Statistics summary
+        ax2.axis('tight')
+        ax2.axis('off')
+        
+        if sales:
+            avg_sales = sum(sales) / len(sales)
+            max_sales = max(sales)
+            min_sales = min(sales)
+            total_sales = sum(sales)
+            
+            stats_text = f"""
+            📊 Sales Statistics
+            
+            Total Sales: ${total_sales:,.0f}
+            Average Daily: ${avg_sales:,.0f}
+            Highest Day: ${max_sales:,.0f}
+            Lowest Day: ${min_sales:,.0f}
+            Days Analyzed: {len(sales)}
+            """
+            
+            ax2.text(0.5, 0.5, stats_text,
+                    transform=ax2.transAxes,
+                    fontsize=11,
+                    verticalalignment='center',
+                    horizontalalignment='center',
+                    bbox=dict(boxstyle='round,pad=0.5', 
+                             facecolor='#1a1a2e', 
+                             edgecolor='white',
+                             alpha=0.8),
+                    color='white',
+                    fontfamily='monospace')
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Embed in Tkinter
+        canvas = FigureCanvasTkAgg(fig, chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=BOTH, expand=True)
+        
+        # Add close button
+        close_btn = create_rounded_button(
+            chart_window,
+            "✗ Close Chart",
+            chart_window.destroy,
+            bg=COLORS['danger'],
+            fg='white',
+            width=15,
+            height=1
         )
-        gradient_frame.pack(fill=X, side=TOP)
+        close_btn.pack(pady=10)
+        
+    except Exception as e:
+        messagebox.showerror("Error", f"Could not generate chart: {str(e)}")
 
-    # Header content
-    content_frame = Frame(header_frame, bg='#667eea')
-    content_frame.pack(fill=BOTH, expand=True, padx=20, pady=10)
+def add_record():
+    table_name = selected_table.get()
+    if table_name == "Select a Table":
+        messagebox.showwarning("Warning", "Please select a table first.")
+        return
 
-    # Title with emoji
-    title_label = Label(
-        content_frame,
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
+    cursor.fetchall()
+    columns = [col[0] for col in cursor.description]
+    cursor.close()
+    conn.close()
+
+    add_win = Toplevel()
+    add_win.title(f"Add Record - {table_name}")
+    add_win.geometry("450x600")
+    add_win.resizable(False, False)
+    add_win.configure(bg=COLORS['bg_secondary'])
+
+    # Title Frame
+    title_frame = Frame(add_win, bg=COLORS['bg_primary'], height=80)
+    title_frame.pack(fill=X, pady=(0, 20))
+    title_frame.pack_propagate(False)
+    
+    Label(title_frame, 
+          text=f"➕ Add New Record", 
+          font=("Segoe UI", 16, "bold"),
+          fg=COLORS['text_light'],
+          bg=COLORS['bg_primary']).pack(pady=20)
+    
+    Label(title_frame, 
+          text=f"Table: {table_name}",
+          font=("Segoe UI", 10),
+          fg=COLORS['text_muted'],
+          bg=COLORS['bg_primary']).pack()
+
+    entries = {}
+    form_frame = Frame(add_win, bg=COLORS['bg_secondary'])
+    form_frame.pack(pady=5, padx=30, fill=X)
+
+    for col in columns:
+        row_frame = Frame(form_frame, bg=COLORS['bg_secondary'])
+        row_frame.pack(fill=X, pady=8)
+        
+        label = Label(row_frame, 
+                      text=col, 
+                      width=20, 
+                      anchor="w", 
+                      font=("Segoe UI", 10, "bold"),
+                      fg=COLORS['text_light'],
+                      bg=COLORS['bg_secondary'])
+        label.pack(side=LEFT)
+        
+        entry = Entry(row_frame, 
+                      width=25,
+                      font=("Segoe UI", 10),
+                      relief='flat',
+                      bg=COLORS['bg_input'],
+                      fg=COLORS['text_dark'])
+        entry.pack(side=LEFT, padx=(10, 0))
+        entries[col] = entry
+
+    def submit_add():
+        values = [entries[col].get() for col in columns]
+        if any(v.strip() == "" for v in values):
+            messagebox.showwarning("Warning", "Please fill in all fields.", parent=add_win)
+            return
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            placeholders = ", ".join(["%s"] * len(columns))
+            col_names = ", ".join(columns)
+            cursor.execute(f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders})", values)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            messagebox.showinfo("Success", "Record added successfully.", parent=add_win)
+            add_win.destroy()
+            display_table(table_name)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=add_win)
+
+    btn_frame = Frame(add_win, bg=COLORS['bg_secondary'])
+    btn_frame.pack(pady=25)
+    
+    submit_btn = create_rounded_button(
+        btn_frame, 
+        "✓ Submit", 
+        submit_add,
+        bg=COLORS['success'],
+        fg='white',
+        width=15,
+        height=1
+    )
+    submit_btn.pack(side=LEFT, padx=5)
+    
+    cancel_btn = create_rounded_button(
+        btn_frame,
+        "✗ Cancel",
+        add_win.destroy,
+        bg=COLORS['danger'],
+        fg='white',
+        width=15,
+        height=1
+    )
+    cancel_btn.pack(side=LEFT, padx=5)
+
+def delete_record():
+    table_name = selected_table.get()
+    if table_name == "Select a Table":
+        messagebox.showwarning("Warning", "Please select a table first.")
+        return
+
+    selected = tree.selection()
+    if not selected:
+        messagebox.showwarning("Warning", "Please select a row to delete.")
+        return
+
+    row_values = tree.item(selected[0])["values"]
+    columns = tree["columns"]
+    primary_key_col = columns[0]
+    primary_key_val = row_values[0]
+
+    confirm = messagebox.askyesno("Confirm Delete", f"Delete record where {primary_key_col} = {primary_key_val}?")
+    if not confirm:
+        return
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"DELETE FROM {table_name} WHERE {primary_key_col} = %s", (primary_key_val,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        messagebox.showinfo("Success", "Record deleted successfully.")
+        display_table(table_name)
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+def update_record():
+    table_name = selected_table.get()
+    if table_name == "Select a Table":
+        messagebox.showwarning("Warning", "Please select a table first.")
+        return
+
+    selected = tree.selection()
+    if not selected:
+        messagebox.showwarning("Warning", "Please select a row to update.")
+        return
+
+    row_values = tree.item(selected[0])["values"]
+    columns = tree["columns"]
+    primary_key_col = columns[0]
+    primary_key_val = row_values[0]
+
+    update_win = Toplevel()
+    update_win.title(f"Update Record - {table_name}")
+    update_win.geometry("450x600")
+    update_win.resizable(False, False)
+    update_win.configure(bg=COLORS['bg_secondary'])
+
+    # Title Frame
+    title_frame = Frame(update_win, bg=COLORS['bg_primary'], height=80)
+    title_frame.pack(fill=X, pady=(0, 20))
+    title_frame.pack_propagate(False)
+    
+    Label(title_frame, 
+          text=f"✏️ Update Record", 
+          font=("Segoe UI", 16, "bold"),
+          fg=COLORS['text_light'],
+          bg=COLORS['bg_primary']).pack(pady=20)
+    
+    Label(title_frame, 
+          text=f"Table: {table_name}",
+          font=("Segoe UI", 10),
+          fg=COLORS['text_muted'],
+          bg=COLORS['bg_primary']).pack()
+
+    entries = {}
+    form_frame = Frame(update_win, bg=COLORS['bg_secondary'])
+    form_frame.pack(pady=5, padx=30, fill=X)
+
+    for col, val in zip(columns, row_values):
+        row_frame = Frame(form_frame, bg=COLORS['bg_secondary'])
+        row_frame.pack(fill=X, pady=8)
+        
+        label = Label(row_frame, 
+                      text=col, 
+                      width=20, 
+                      anchor="w", 
+                      font=("Segoe UI", 10, "bold"),
+                      fg=COLORS['text_light'],
+                      bg=COLORS['bg_secondary'])
+        label.pack(side=LEFT)
+        
+        entry = Entry(row_frame, 
+                      width=25,
+                      font=("Segoe UI", 10),
+                      relief='flat',
+                      bg=COLORS['bg_input'],
+                      fg=COLORS['text_dark'])
+        entry.insert(0, val)
+        if col == primary_key_col:
+            entry.config(state="disabled", bg='#d0d0d0')
+        entry.pack(side=LEFT, padx=(10, 0))
+        entries[col] = entry
+
+    def submit_update():
+        set_parts = []
+        values = []
+        for col in columns:
+            if col == primary_key_col:
+                continue
+            set_parts.append(f"{col} = %s")
+            values.append(entries[col].get())
+        values.append(primary_key_val)
+
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            set_clause = ", ".join(set_parts)
+            cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE {primary_key_col} = %s", values)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            messagebox.showinfo("Success", "Record updated successfully.", parent=update_win)
+            update_win.destroy()
+            display_table(table_name)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=update_win)
+
+    btn_frame = Frame(update_win, bg=COLORS['bg_secondary'])
+    btn_frame.pack(pady=25)
+    
+    update_btn = create_rounded_button(
+        btn_frame,
+        "✓ Update",
+        submit_update,
+        bg=COLORS['accent'],
+        fg='white',
+        width=15,
+        height=1
+    )
+    update_btn.pack(side=LEFT, padx=5)
+    
+    cancel_btn = create_rounded_button(
+        btn_frame,
+        "✗ Cancel",
+        update_win.destroy,
+        bg=COLORS['danger'],
+        fg='white',
+        width=15,
+        height=1
+    )
+    cancel_btn.pack(side=LEFT, padx=5)
+
+def open_dashboard():
+    global tree
+    global selected_table
+
+    dashboard = Toplevel()
+    dashboard.title("Coffee Shop Database Management System")
+    dashboard.geometry("1300x750")
+    dashboard.configure(bg=COLORS['bg_secondary'])
+
+    # Header
+    header_frame = Frame(dashboard, bg=COLORS['bg_primary'], height=100)
+    header_frame.pack(fill=X, pady=(0, 20))
+    header_frame.pack_propagate(False)
+    
+    Label(
+        header_frame,
         text="☕ COFFEE SHOP DATABASE MANAGEMENT SYSTEM",
         font=("Segoe UI", 20, "bold"),
-        bg='#667eea',
-        fg='white',
-        anchor=W
-    )
-    title_label.pack(side=LEFT)
+        fg=COLORS['text_light'],
+        bg=COLORS['bg_primary']
+    ).pack(pady=30)
+    
+    # Control Panel
+    control_frame = Frame(dashboard, bg=COLORS['bg_secondary'])
+    control_frame.pack(pady=15, padx=20, fill=X)
 
-    # User info on right
-    user_frame = Frame(content_frame, bg='#667eea')
-    user_frame.pack(side=RIGHT)
-
-    Label(
-        user_frame,
-        text=f"👤 {current_user}",
-        font=("Segoe UI", 12),
-        bg='#667eea',
-        fg='white'
-    ).pack(side=LEFT, padx=10)
-
-    logout_btn = Button(
-        user_frame,
-        text="🚪 Logout",
-        font=("Segoe UI", 10, "bold"),
-        bg='white',
-        fg='#667eea',
-        padx=15,
-        pady=5,
-        cursor='hand2',
-        relief=FLAT,
-        command=lambda: logout(dashboard_window)
-    )
-    logout_btn.pack(side=LEFT, padx=10)
-
-    # Hover effect for logout button
-    def on_enter(e):
-        logout_btn.config(bg='#edf2f7')
-
-    def on_leave(e):
-        logout_btn.config(bg='white')
-
-    logout_btn.bind('<Enter>', on_enter)
-    logout_btn.bind('<Leave>', on_leave)
-
-    # ===== CONTROLS SECTION =====
-    controls_frame = Frame(dashboard_window, bg='white', padx=20, pady=15)
-    controls_frame.pack(fill=X, side=TOP, pady=(10, 0), padx=20)
-    controls_frame.pack_propagate(False)
-    controls_frame.config(height=60)
-
-    # Left controls
-    left_controls = Frame(controls_frame, bg='white')
-    left_controls.pack(side=LEFT)
-
-    Label(
-        left_controls,
-        text="📊 Select Table:",
-        font=("Segoe UI", 12, "bold"),
-        bg='white',
-        fg='#2d3748'
-    ).pack(side=LEFT, padx=(0, 10))
-
-    # Enhanced combobox
-    style = ttk.Style()
-    style.theme_use('clam')
-    style.configure('Custom.TCombobox',
-                    fieldbackground='white',
-                    background='white',
-                    foreground='#2d3748',
-                    font=('Segoe UI', 11),
-                    padding=5)
-    style.map('Custom.TCombobox',
-              fieldbackground=[('readonly', 'white')],
-              selectbackground=[('readonly', '#667eea')],
-              selectforeground=[('readonly', 'white')])
+    # Left side - Table selection
+    left_frame = Frame(control_frame, bg=COLORS['bg_secondary'])
+    left_frame.pack(side=LEFT, padx=10)
+    
+    Label(left_frame, 
+          text="Select Table:", 
+          font=("Segoe UI", 11, "bold"),
+          fg=COLORS['text_light'],
+          bg=COLORS['bg_secondary']).pack(side=LEFT, padx=(0, 10))
 
     selected_table = StringVar()
     combo = ttk.Combobox(
-        left_controls,
+        left_frame,
         textvariable=selected_table,
         state="readonly",
         width=25,
-        style='Custom.TCombobox',
-        font=("Segoe UI", 11)
+        style='Custom.TCombobox'
     )
-
     combo["values"] = (
-        "Product",
-        "Customer",
-        "Employee",
-        "Supplier",
-        "Inventory",
-        "Sales",
-        "Sales_Details",
-        "Product_Recipe"
+        "Product", "Customer", "Employee", "Supplier",
+        "Inventory", "Sales", "Sales_Details", "Product_Recipe"
     )
     combo.set("Select a Table")
-    combo.pack(side=LEFT, padx=5)
+    combo.pack(side=LEFT)
 
-    # Buttons with modern styling
-    def create_styled_button(parent, text, command, bg_color, hover_color):
-        btn = Button(
-            parent,
-            text=text,
-            font=("Segoe UI", 10, "bold"),
-            bg=bg_color,
+    # Right side - Buttons
+    btn_frame = Frame(control_frame, bg=COLORS['bg_secondary'])
+    btn_frame.pack(side=RIGHT, padx=10)
+
+    buttons = [
+        ("📊 Show Data", COLORS['accent'], lambda: display_table(selected_table.get())),
+        ("📈 Sales Chart", COLORS['warning'], show_sales_chart),
+        ("➕ Add", COLORS['success'], add_record),
+        ("✏️ Update", COLORS['warning'], update_record),
+        ("🗑️ Delete", COLORS['danger'], delete_record)
+    ]
+
+    for text, color, cmd in buttons:
+        btn = create_rounded_button(
+            btn_frame,
+            text,
+            cmd,
+            bg=color,
             fg='white',
-            padx=20,
-            pady=8,
-            relief=FLAT,
-            cursor='hand2',
-            command=command
+            width=12,
+            height=1
         )
-        btn.pack(side=LEFT, padx=5)
+        btn.pack(side=LEFT, padx=4)
 
-        def on_enter(e):
-            btn.config(bg=hover_color)
+    # Treeview Frame
+    tree_frame = Frame(dashboard, bg=COLORS['bg_secondary'])
+    tree_frame.pack(fill=BOTH, expand=True, padx=20, pady=10)
 
-        def on_leave(e):
-            btn.config(bg=bg_color)
-
-        btn.bind('<Enter>', on_enter)
-        btn.bind('<Leave>', on_leave)
-        return btn
-
-    create_styled_button(
-        controls_frame,
-        "📊 Show Data",
-        lambda: display_table(selected_table.get()),
-        '#667eea',
-        '#5a67d8'
-    )
-
-    create_styled_button(
-        controls_frame,
-        "🔄 Refresh",
-        lambda: refresh_data(),
-        '#48bb78',
-        '#38a169'
-    )
-
-    create_styled_button(
-        controls_frame,
-        "📋 Export CSV",
-        lambda: export_csv(),
-        '#ed8936',
-        '#dd6b20'
-    )
-
-    create_styled_button(
-        controls_frame,
-        "📈 Statistics",
-        lambda: show_statistics(),
-        '#9f7aea',
-        '#805ad5'
-    )
-
-    # ===== TABLE FRAME =====
-    table_frame = Frame(dashboard_window, bg='white', bd=1, relief=SOLID)
-    table_frame.pack(fill=BOTH, expand=True, padx=20, pady=10)
-
-    # Scrollbars with custom styling
-    x_scroll = Scrollbar(table_frame, orient=HORIZONTAL, troughcolor='#edf2f7')
-    y_scroll = Scrollbar(table_frame, orient=VERTICAL, troughcolor='#edf2f7')
-
+    x_scroll = Scrollbar(tree_frame, orient=HORIZONTAL)
+    y_scroll = Scrollbar(tree_frame, orient=VERTICAL)
     x_scroll.pack(side=BOTTOM, fill=X)
     y_scroll.pack(side=RIGHT, fill=Y)
 
-    # Enhanced Treeview
     tree = ttk.Treeview(
-        table_frame,
+        tree_frame,
+        style='Custom.Treeview',
         xscrollcommand=x_scroll.set,
-        yscrollcommand=y_scroll.set,
-        selectmode='extended',
-        height=20
+        yscrollcommand=y_scroll.set
     )
     tree.pack(fill=BOTH, expand=True)
 
     x_scroll.config(command=tree.xview)
     y_scroll.config(command=tree.yview)
 
-    # Bind double-click to view details
-    tree.bind('<Double-1>', on_row_double_click)
-    tree.bind('<Button-3>', show_context_menu)  # Right-click context menu
-
-    # ===== STATUS BAR =====
-    status_frame = Frame(dashboard_window, bg='#667eea', height=30)
-    status_frame.pack(fill=X, side=BOTTOM)
-    status_frame.pack_propagate(False)
-
-    status_bar = Label(
-        status_frame,
-        text="  Ready",
-        font=("Segoe UI", 9),
-        bg='#667eea',
-        fg='white',
-        anchor=W
-    )
-    status_bar.pack(side=LEFT, fill=X, expand=True)
-
-    # Time display in status bar
-    time_label = Label(
-        status_frame,
-        font=("Segoe UI", 9),
-        bg='#667eea',
-        fg='white'
-    )
-    time_label.pack(side=RIGHT, padx=10)
-
-    def update_time():
-        if dashboard_window.winfo_exists():
-            current_time = datetime.now().strftime("%I:%M:%S %p")
-            time_label.config(text=f"  🕐 {current_time}  ")
-            dashboard_window.after(1000, update_time)
-
-    update_time()
-
-    # Show welcome toast
-    Toast(dashboard_window, f"Welcome back, {current_user}! ☕", "success")
-
-
-# ============================================
-# CONTEXT MENU (Right-click functionality)
-# ============================================
-def show_context_menu(event):
-    if not tree.selection():
-        return
-
-    menu = Menu(dashboard_window, tearoff=0, bg='white', fg='#2d3748')
-    menu.add_command(label="📋 Copy Row", command=copy_row)
-    menu.add_command(label="📊 View Details", command=view_row_details)
-    menu.add_separator()
-    menu.add_command(label="🔄 Refresh", command=refresh_data)
-    menu.post(event.x_root, event.y_root)
-
-
-def copy_row():
-    selected = tree.selection()
-    if selected:
-        values = tree.item(selected[0])['values']
-        row_text = '\t'.join(str(v) for v in values)
-        dashboard_window.clipboard_clear()
-        dashboard_window.clipboard_append(row_text)
-        Toast(dashboard_window, "Row copied to clipboard!", "success")
-
-
-def view_row_details():
-    selected = tree.selection()
-    if selected:
-        values = tree.item(selected[0])['values']
-        columns = tree["columns"]
-
-        details = "\n".join(f"{col}: {val}" for col, val in zip(columns, values))
-        messagebox.showinfo("Row Details", details)
-
-
-def on_row_double_click(event):
-    view_row_details()
-
-
-# ============================================
-# EXPORT TO CSV
-# ============================================
-def export_csv():
-    if not tree:
-        return
-
-    from tkinter import filedialog
-    import csv
-
-    filename = filedialog.asksaveasfilename(
-        defaultextension=".csv",
-        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-        title="Export Data"
-    )
-
-    if not filename:
-        return
-
-    try:
-        columns = tree["columns"]
-        rows = []
-        for item in tree.get_children():
-            rows.append(tree.item(item)['values'])
-
-        with open(filename, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(columns)
-            writer.writerows(rows)
-
-        Toast(dashboard_window, f"Data exported to {filename}", "success")
-    except Exception as e:
-        Toast(dashboard_window, f"Export failed: {str(e)}", "error")
-
-
-# ============================================
-# STATISTICS
-# ============================================
-def show_statistics():
-    if not tree or not tree.get_children():
-        Toast(dashboard_window, "No data to analyze", "warning")
-        return
-
-    columns = tree["columns"]
-    rows = []
-    for item in tree.get_children():
-        rows.append(tree.item(item)['values'])
-
-    stats = f"📊 Table Statistics\n\n"
-    stats += f"Total Records: {len(rows)}\n"
-    stats += f"Total Columns: {len(columns)}\n"
-
-    # Try to find numeric columns for stats
-    for idx, col in enumerate(columns):
-        numeric_values = []
-        for row in rows:
-            if idx < len(row):
-                try:
-                    val = float(row[idx])
-                    numeric_values.append(val)
-                except (ValueError, TypeError):
-                    pass
-
-        if numeric_values:
-            stats += f"\n{col}:\n"
-            stats += f"  - Count: {len(numeric_values)}\n"
-            stats += f"  - Min: {min(numeric_values):.2f}\n"
-            stats += f"  - Max: {max(numeric_values):.2f}\n"
-            stats += f"  - Avg: {sum(numeric_values) / len(numeric_values):.2f}\n"
-
-    messagebox.showinfo("Table Statistics", stats)
-
-
-# ============================================
-# REFRESH DATA
-# ============================================
-def refresh_data():
-    if selected_table and selected_table.get() != "Select a Table":
-        display_table(selected_table.get())
-    else:
-        Toast(dashboard_window, "Please select a table first", "warning")
-
-
-# ============================================
-# LOGOUT
-# ============================================
-def logout(window):
-    if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
-        window.destroy()
-        # Show login window again
-        root.deiconify()
-        Toast(root, "Logged out successfully", "info")
-
-
-# ============================================
-# ENHANCED LOGIN
-# ============================================
 def login():
-    global current_user
-    username = username_entry.get().strip()
-    password = password_entry.get().strip()
+    username = username_entry.get()
+    password = password_entry.get()
 
-    # Show loading animation on login
-    login_btn.config(text="⏳ Logging in...", state=DISABLED)
-    root.update()
+    if username == "admin" and password == "1234":
+        result_label.config(text="✓ Login Successful", fg=COLORS['success'])
+        root.after(500, open_dashboard)
+    else:
+        result_label.config(text="✗ Invalid Username or Password", fg=COLORS['danger'])
 
-    # Simulate async login check
-    def check_login():
-        # In production, check against database
-        if username == "admin" and password == "1234":
-            current_user = username
-            root.after(0, lambda: login_success())
-        else:
-            root.after(0, lambda: login_failed())
-
-    threading.Thread(target=check_login, daemon=True).start()
-
-
-def login_success():
-    login_btn.config(text="Login", state=NORMAL)
-    result_label.config(text="✅ Login Successful!", fg="#48bb78", font=("Segoe UI", 11, "bold"))
-
-    # Hide login window
-    root.withdraw()
-
-    # Open dashboard
-    open_dashboard()
-
-
-def login_failed():
-    login_btn.config(text="Login", state=NORMAL)
-    result_label.config(text="❌ Invalid Username or Password", fg="#fc8181", font=("Segoe UI", 11, "bold"))
-
-    # Shake animation
-    for widget in [username_entry, password_entry]:
-        widget.config(bg='#fff5f5')
-        root.after(500, lambda: widget.config(bg='white'))
-
-
-# ============================================
-# KEYBOARD SHORTCUTS
-# ============================================
-def on_key_press(event):
-    if event.keysym == 'Return' and event.widget in [username_entry, password_entry]:
-        login()
-    elif event.keysym == 'Escape':
-        root.quit()
-
-
-# ============================================
-# MAIN APPLICATION
-# ============================================
-# ===== LOGIN WINDOW =====
+# Main Login Window
 root = Tk()
-root.title("☕ Coffee Shop Login")
-root.geometry("450x550")
-root.configure(bg='#f0f4f8')
+root.title("Coffee Shop Login")
+root.geometry("450x400")
 root.resizable(False, False)
+root.configure(bg=COLORS['bg_secondary'])
 
-# Center window on screen
-root.eval('tk::PlaceWindow . center')
+# Setup styles
+style = setup_styles()
 
-# ===== LOGIN FRAME =====
-login_frame = Frame(root, bg='white', bd=2, relief=SOLID, padx=40, pady=40)
-login_frame.place(relx=0.5, rely=0.5, anchor=CENTER)
+# Login Container
+login_frame = Frame(root, bg=COLORS['bg_primary'], relief='flat', bd=0)
+login_frame.pack(expand=True, fill=BOTH, padx=30, pady=30)
 
-# Logo
-Label(
-    login_frame,
-    text="☕",
-    font=("Segoe UI", 60),
-    bg='white'
-).pack(pady=(0, 5))
+# Title
+Label(login_frame, 
+      text="☕ COFFEE SHOP", 
+      font=("Segoe UI", 22, "bold"),
+      fg=COLORS['text_light'],
+      bg=COLORS['bg_primary']).pack(pady=(20, 5))
 
-Label(
-    login_frame,
-    text="Coffee Shop",
-    font=("Segoe UI", 24, "bold"),
-    bg='white',
-    fg='#2d3748'
-).pack()
-
-Label(
-    login_frame,
-    text="Database Management System",
-    font=("Segoe UI", 12),
-    bg='white',
-    fg='#718096'
-).pack(pady=(0, 30))
+Label(login_frame, 
+      text="Login to Access Database", 
+      font=("Segoe UI", 11),
+      fg=COLORS['text_muted'],
+      bg=COLORS['bg_primary']).pack(pady=(0, 30))
 
 # Username
-Label(
-    login_frame,
-    text="Username",
-    font=("Segoe UI", 11, "bold"),
-    bg='white',
-    fg='#2d3748',
-    anchor=W
-).pack(fill=X, pady=(0, 5))
+Label(login_frame, 
+      text="Username", 
+      font=("Segoe UI", 10, "bold"),
+      fg=COLORS['text_light'],
+      bg=COLORS['bg_primary'],
+      anchor='w').pack(fill=X, padx=30, pady=(0, 5))
 
-username_entry = Entry(
-    login_frame,
-    font=("Segoe UI", 12),
-    bg='#f7fafc',
-    relief=FLAT,
-    bd=2,
-    highlightthickness=2,
-    highlightcolor='#667eea',
-    highlightbackground='#e2e8f0'
-)
-username_entry.pack(fill=X, pady=(0, 20), ipady=8)
-username_entry.insert(0, "admin")
+username_entry = Entry(login_frame, 
+                       width=30,
+                       font=("Segoe UI", 11),
+                       relief='flat',
+                       bg=COLORS['bg_input'],
+                       fg=COLORS['text_dark'])
+username_entry.pack(pady=(0, 15), padx=30, ipady=5)
 
 # Password
-Label(
-    login_frame,
-    text="Password",
-    font=("Segoe UI", 11, "bold"),
-    bg='white',
-    fg='#2d3748',
-    anchor=W
-).pack(fill=X, pady=(0, 5))
+Label(login_frame, 
+      text="Password", 
+      font=("Segoe UI", 10, "bold"),
+      fg=COLORS['text_light'],
+      bg=COLORS['bg_primary'],
+      anchor='w').pack(fill=X, padx=30, pady=(0, 5))
 
-password_entry = Entry(
-    login_frame,
-    font=("Segoe UI", 12),
-    bg='#f7fafc',
-    show="•",
-    relief=FLAT,
-    bd=2,
-    highlightthickness=2,
-    highlightcolor='#667eea',
-    highlightbackground='#e2e8f0'
-)
-password_entry.pack(fill=X, pady=(0, 20), ipady=8)
-password_entry.insert(0, "1234")
+password_entry = Entry(login_frame, 
+                       show="*", 
+                       width=30,
+                       font=("Segoe UI", 11),
+                       relief='flat',
+                       bg=COLORS['bg_input'],
+                       fg=COLORS['text_dark'])
+password_entry.pack(pady=(0, 20), padx=30, ipady=5)
 
-# Login button with gradient effect
-login_btn = Button(
+# Login Button
+login_btn = create_rounded_button(
     login_frame,
-    text="🔑 Login",
-    font=("Segoe UI", 13, "bold"),
-    bg='#667eea',
+    "🔑 Login",
+    login,
+    bg=COLORS['accent'],
     fg='white',
-    relief=FLAT,
-    cursor='hand2',
-    padx=20,
-    pady=12,
-    command=login
+    width=20,
+    height=2
 )
-login_btn.pack(fill=X, pady=(0, 15))
+login_btn.pack(pady=10)
 
-
-# Hover effect
-def on_enter(e):
-    login_btn.config(bg='#5a67d8')
-
-
-def on_leave(e):
-    login_btn.config(bg='#667eea')
-
-
-login_btn.bind('<Enter>', on_enter)
-login_btn.bind('<Leave>', on_leave)
-
-# Result label
-result_label = Label(
-    login_frame,
-    text="",
-    font=("Segoe UI", 10),
-    bg='white'
-)
-result_label.pack()
+# Result Label
+result_label = Label(login_frame, 
+                     text="", 
+                     font=("Segoe UI", 10, "bold"),
+                     fg=COLORS['text_light'],
+                     bg=COLORS['bg_primary'])
+result_label.pack(pady=10)
 
 # Footer
-Label(
-    login_frame,
-    text="Default credentials: admin / 1234",
-    font=("Segoe UI", 8),
-    bg='white',
-    fg='#a0aec0'
-).pack(pady=(20, 0))
+Label(login_frame, 
+      text="Default: admin / 1234", 
+      font=("Segoe UI", 8),
+      fg=COLORS['text_muted'],
+      bg=COLORS['bg_primary']).pack(pady=(20, 5))
 
-# ===== BIND KEYBOARD SHORTCUTS =====
-root.bind('<Key>', on_key_press)
-
-# ===== START APPLICATION =====
-if __name__ == "__main__":
-    root.mainloop()
+root.mainloop()
